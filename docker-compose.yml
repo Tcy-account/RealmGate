@@ -1,0 +1,88 @@
+# RealmGate 本地基础设施
+# 启动时所有容器归属于 Compose 项目 "realmgate"，并挂在同一网络 realmgate-net 上，
+# 在 Docker Desktop / docker ps 中作为一个组展示，不会与其他项目混淆。
+#
+# 常用命令：
+#   启动基础服务(PostgreSQL + Redis):  docker compose up -d
+#   连同管理 UI 一起启动:              docker compose --profile tools up -d
+#   停止(保留数据):                   docker compose down
+#   停止并清空数据卷:                  docker compose down -v
+
+# 显式指定 Compose 项目名 → 容器自动归组为 "realmgate"
+name: realmgate
+
+services:
+  # ---- 基础服务（默认启动）----
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: realmgate-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-realmgate}
+      POSTGRES_USER: ${POSTGRES_USER:-realmgate}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-realmgate}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - realmgate-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-realmgate}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: realmgate-redis
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    networks:
+      - realmgate-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ---- 管理 UI（--profile tools 才启动，方便浏览数据）----
+
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: realmgate-pgadmin
+    profiles: ["tools"]
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL:-admin@realmgate.local}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:-admin}
+    ports:
+      - "${PGADMIN_PORT:-5050}:80"
+    networks:
+      - realmgate-net
+    restart: unless-stopped
+    depends_on:
+      - postgres
+
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: realmgate-redis-commander
+    profiles: ["tools"]
+    environment:
+      REDIS_HOSTS: local:realmgate-redis:6379
+    ports:
+      - "${REDIS_COMMANDER_PORT:-8081}:8081"
+    networks:
+      - realmgate-net
+    restart: unless-stopped
+    depends_on:
+      - redis
+
+networks:
+  # 项目内所有容器共享的桥接网络，容器间用服务名互访
+  realmgate-net:
+    driver: bridge
+
+volumes:
+  pgdata:

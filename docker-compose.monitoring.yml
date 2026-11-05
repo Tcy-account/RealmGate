@@ -1,0 +1,43 @@
+# RealmGate 监控预留（M7）：Prometheus + Grafana
+# 独立于主 docker-compose.yml（主只跑 PG+Redis），不要求 backend/web 镜像化 —— 你 IDE 直接启动 realmgate-server(:9000) 即可。
+#
+# 启动：  docker compose -f docker-compose.monitoring.yml up -d
+# 停止：  docker compose -f docker-compose.monitoring.yml down
+# 访问：  Prometheus http://localhost:9090 ｜ Grafana http://localhost:3000（admin/admin）
+#
+# 依赖主 Compose 已创建的网络 realmgate-net（项目名 realmgate → 全名 realmgate-realmgate-net），
+# 故此处用 external: true 引用，使监控容器与主 PG/Redis/backend 在同一网络互访。
+
+name: realmgate-monitoring
+
+services:
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: realmgate-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    networks:
+      - realmgate-net
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: realmgate-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+    depends_on:
+      - prometheus
+    networks:
+      - realmgate-net
+    restart: unless-stopped
+
+networks:
+  realmgate-net:
+    external: true
+    name: realmgate-realmgate-net

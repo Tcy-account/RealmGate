@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RealmGate OAuth2 调试台（PKCE）</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; padding: 32px 16px;
+      font: 14px/1.6 -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+      background: #f5f7fa; color: #1f2937;
+    }
+    .wrap { max-width: 880px; margin: 0 auto; }
+    h1 { margin: 0 0 4px; font-size: 22px; }
+    .sub { margin: 0 0 24px; color: #6b7280; }
+    .card {
+      background: #fff; border: 1px solid #e5e7eb; border-radius: 10px;
+      padding: 18px 20px; margin-bottom: 16px;
+    }
+    .card h2 { margin: 0 0 12px; font-size: 15px; }
+    .card.locked { opacity: .45; }
+    .kv { color: #4b5563; font-size: 13px; margin: 2px 0; }
+    .kv b { color: #111827; font-weight: 600; }
+    button {
+      font: inherit; font-weight: 600; color: #fff; background: #2563eb;
+      border: 0; border-radius: 8px; padding: 9px 16px; cursor: pointer;
+    }
+    button:hover { background: #1d4ed8; }
+    button:disabled { background: #9ca3af; cursor: not-allowed; }
+    button.ghost { background: #fff; color: #374151; border: 1px solid #d1d5db; font-weight: 500; }
+    button.ghost:hover { background: #f3f4f6; }
+    pre, .mono {
+      font-family: ui-monospace, Consolas, "Courier New", monospace;
+      font-size: 12px; background: #0f172a; color: #e2e8f0;
+      border-radius: 8px; padding: 12px; overflow: auto; white-space: pre-wrap;
+      word-break: break-all; margin: 10px 0 0;
+    }
+    .mono.light { background: #f3f4f6; color: #374151; }
+    .tag {
+      display: inline-block; font-size: 12px; font-weight: 600;
+      padding: 2px 8px; border-radius: 999px; margin-right: 6px;
+    }
+    .ok { background: #dcfce7; color: #15803d; }
+    .bad { background: #fee2e2; color: #b91c1c; }
+    .warn { background: #fef3c7; color: #b45309; }
+    .hit { background: #dcfce7; color: #15803d; padding: 1px 4px; border-radius: 4px; }
+    .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 12px; }
+    label { font-size: 13px; color: #374151; }
+    select {
+      font: inherit; font-size: 13px; padding: 6px 8px;
+      border: 1px solid #d1d5db; border-radius: 6px; background: #fff;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="wrap">
+    <h1>RealmGate OAuth2 调试台</h1>
+    <p class="sub">授权码 + PKCE(S256) + OIDC 全流程，全部在浏览器内完成，不依赖 Postman。</p>
+
+    <section class="card">
+      <h2>① 发起授权</h2>
+      <div class="kv">授权端点 <b id="ep-auth"></b></div>
+      <div class="kv">令牌端点 <b id="ep-token"></b></div>
+      <div class="kv">回调地址 <b id="ep-redirect"></b></div>
+      <div class="kv">Client ID <b>realmgate-web</b>（公开客户端，无 secret，强制 PKCE）</div>
+      <div class="kv" style="color:#6b7280">Scope <b>openid profile</b>　提示：SAS 按设计<b>不</b>给公开客户端（
+        <span class="mono light" style="padding:1px 4px">ClientAuthenticationMethod.NONE</span>）签发
+        <b>refresh_token</b>，所以下面没有该字段属正常；需要 refresh_token 得改用机密客户端（BFF 模式）。
+      </div>
+      <div class="row">
+        <label>租户提示（仅用于登录页填写，不影响协议）</label>
+        <select id="tenant-hint">
+          <option value="alpha">alpha（admin / admin123）</option>
+          <option value="beta">beta（member / member123）</option>
+        </select>
+        <button id="btn-auth">开始授权 →</button>
+      </div>
+      <div id="pkce-info" class="mono" style="display:none"></div>
+    </section>
+
+    <section class="card" id="card-token">
+      <h2>② 令牌</h2>
+      <div id="token-status" class="kv">尚未获取。点上面的「开始授权」。</div>
+      <div id="token-out"></div>
+    </section>
+
+    <section class="card locked" id="card-api">
+      <h2>③ 用 access_token 调业务接口（验证租户隔离）</h2>
+      <div class="kv">请求：<b>GET /api/projects</b>，携带 <b>Authorization: Bearer &lt;access_token&gt;</b></div>
+      <div class="row">
+        <button id="btn-api">调用 /api/projects</button>
+        <button id="btn-api-forge" class="ghost">再测一次并伪造 X-Tenant-Id 头</button>
+      </div>
+      <pre id="api-out">（等待调用）</pre>
+    </section>
+  </div>
+
+  <script>
+    // ---------- 协议常量（同源，无需 CORS） ----------
+    var ORIGIN = location.origin;
+    var CLIENT_ID = 'realmgate-web';
+    var REDIRECT_URI = ORIGIN + '/oauth-playground.html';
+    var AUTHORIZE_EP = ORIGIN + '/oauth2/authorize';
+    var TOKEN_EP = ORIGIN + '/oauth2/token';
+    var SCOPE = 'openid profile';
+    var K_VERIFIER = 'rg_pkce_verifier';
+    var K_STATE = 'rg_pkce_state';
+    var K_TOKEN = 'rg_last_token_response';
+
+    document.getElementById('ep-auth').textContent = AUTHORIZE_EP;
+    document.getElementById('ep-token').textContent = TOKEN_EP;
+    document.getElementById('ep-redirect').textContent = REDIRECT_URI;
+
+    // ---------- 工具 ----------
+    function b64urlFromBytes(bytes) {
+      var s = '';
+      for (var i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
+      return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    }
+
+    function padB64(s) {
+      s = s.replace(/-/g, '+').replace(/_/g, '/');
+      while (s.length % 4 !== 0) s += '=';
+      return s;
+    }
+
+    function decodeJwt(token) {
+      var parts = token.split('.');
+      if (parts.length < 2) return null;
+      var json = function (part) {
+        var raw = atob(padB64(part));
+        var bytes = new Uint8Array(raw.length);
+        for (var i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+        return JSON.parse(new TextDecoder().decode(bytes));
+      };
+      return { header: json(parts[0]), payload: json(parts[1]) };
+    }
+
+    function esc(s) {
+      return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
+    function fmtTs(sec) {
+      if (!sec) return '-';
+      return new Date(sec * 1000).toLocaleString();
+    }
+
+    // ---------- ① 发起授权：生成 PKCE 并跳转 ----------
+    async function startAuthorization() {
+      var verifier = b64urlFromBytes(crypto.getRandomValues(new Uint8Array(32)));
+      var state = b64urlFromBytes(crypto.getRandomValues(new Uint8Array(16)));
+      var digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier));
+      var challenge = b64urlFromBytes(new Uint8Array(digest));
+
+      sessionStorage.setItem(K_VERIFIER, verifier);
+      sessionStorage.setItem(K_STATE, state);
+      sessionStorage.removeItem(K_TOKEN);
+
+      var box = document.getElementById('pkce-info');
+      box.style.display = 'block';
+      box.textContent =
+        'code_verifier  = ' + verifier + '\n' +
+        'code_challenge = ' + challenge + ' (method=S256)\n' +
+        'state          = ' + state + '\n\n' +
+        '正在跳转到授权端点…';
+
+      var url = new URL(AUTHORIZE_EP);
+      url.searchParams.set('response_type', 'code');
+      url.searchParams.set('client_id', CLIENT_ID);
+      url.searchParams.set('redirect_uri', REDIRECT_URI);
+      url.searchParams.set('scope', SCOPE);
+      url.searchParams.set('state', state);
+      url.searchParams.set('code_challenge', challenge);
+      url.searchParams.set('code_challenge_method', 'S256');
+      location.href = url.toString();
+    }
+
+    // ---------- ② 用 code + verifier 换 token ----------
+    async function exchangeCode(code, returnedState) {
+      var verifier = sessionStorage.getItem(K_VERIFIER);
+      var expectedState = sessionStorage.getItem(K_STATE);
+      var status = document.getElementById('token-status');
+
+      if (!verifier) {
+        status.innerHTML = '<span class="tag bad">失败</span>sessionStorage 里没有 code_verifier，无法完成 PKCE。请重新点「开始授权」。';
+        return;
+      }
+      if (expectedState && returnedState !== expectedState) {
+        status.innerHTML = '<span class="tag bad">失败</span>state 不匹配（可能 CSRF），已中止。';
+        return;
+      }
+
+      status.innerHTML = '<span class="tag warn">进行中</span>正在用 code 交换令牌…';
+
+      var body = new URLSearchParams();
+      body.set('grant_type', 'authorization_code');
+      body.set('code', code);
+      body.set('redirect_uri', REDIRECT_URI);
+      body.set('client_id', CLIENT_ID);
+      body.set('code_verifier', verifier);
+
+      try {
+        var res = await fetch(TOKEN_EP, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: body.toString()
+        });
+        var text = await res.text();
+        if (!res.ok) {
+          status.innerHTML = '<span class="tag bad">失败</span>令牌端点返回 HTTP ' + res.status;
+          document.getElementById('token-out').innerHTML = '<pre>' + esc(text) + '</pre>';
+          return;
+        }
+        var data = JSON.parse(text);
+        sessionStorage.setItem(K_TOKEN, text);
+        sessionStorage.removeItem(K_VERIFIER);
+        status.innerHTML = '<span class="tag ok">成功</span>已获取令牌（HTTP ' + res.status + '）';
+        renderTokens(data);
+      } catch (e) {
+        status.innerHTML = '<span class="tag bad">异常</span>' + esc(e.message);
+      }
+    }
+
+    function renderTokens(data) {
+      var out = document.getElementById('token-out');
+      var html = '';
+
+      html += '<div class="kv" style="margin-top:10px">token_type=<b>' + esc(data.token_type) + '</b>　' +
+        'expires_in=<b>' + esc(data.expires_in) + 's</b>　' +
+        'scope=<b>' + esc(data.scope) + '</b></div>';
+
+      ['access_token', 'id_token', 'refresh_token'].forEach(function (name) {
+        if (!data[name]) return;
+        var decoded = name === 'refresh_token' ? null : decodeJwt(data[name]);
+        html += '<div style="margin-top:14px"><div class="kv"><b>' + name + '</b>（' + data[name].length + ' 字符）</div>';
+        if (decoded) {
+          var p = decoded.payload;
+          var hasTenant = p.tenant_id !== undefined;
+          html += '<div class="kv">头部：alg=<b>' + esc(decoded.header.alg) + '</b>　' +
+            'kid=' + esc(decoded.header.kid || '-') + '</div>';
+          html += '<div class="kv">' +
+            (hasTenant
+              ? '<span class="tag ok">tenant_id 存在</span>tenant_id = <span class="hit"><b>' + esc(p.tenant_id) + '</b></span>'
+              : '<span class="tag bad">tenant_id 缺失</span>（检查 TenantJwtTokenCustomizer 是否注册为 Bean）') +
+            '</div>';
+          html += '<div class="kv">sub=<b>' + esc(p.sub) + '</b>　iss=<b>' + esc(p.iss) + '</b></div>';
+          html += '<div class="kv">aud=' + esc(JSON.stringify(p.aud || '')) + '　exp=' + esc(fmtTs(p.exp)) + '</div>';
+          if (p.preferred_username || p.name) {
+            html += '<div class="kv">preferred_username=' + esc(p.preferred_username || p.name) + '</div>';
+          }
+          html += '<pre>' + esc(JSON.stringify(p, null, 2)) + '</pre>';
+        } else {
+          html += '<pre>' + esc(data[name]) + '</pre>';
+        }
+        html += '</div>';
+      });
+
+      out.innerHTML = html || '<pre>' + esc(JSON.stringify(data, null, 2)) + '</pre>';
+
+      var apiCard = document.getElementById('card-api');
+      apiCard.classList.remove('locked');
+    }
+
+    // ---------- ③ 调业务接口 ----------
+    function currentAccessToken() {
+      var raw = sessionStorage.getItem(K_TOKEN);
+      if (!raw) return null;
+      try { return JSON.parse(raw).access_token; } catch (e) { return null; }
+    }
+
+    async function callProjects(forgeHeader) {
+      var out = document.getElementById('api-out');
+      var token = currentAccessToken();
+      if (!token) {
+        out.textContent = '没有 access_token，请先完成①②。';
+        return;
+      }
+      out.textContent = '请求中…';
+      var headers = { 'Authorization': 'Bearer ' + token };
+      if (forgeHeader) headers['X-Tenant-Id'] = 'beta';
+
+      try {
+        var res = await fetch(ORIGIN + '/api/projects', { headers: headers });
+        var text = await res.text();
+        var lines = [];
+        lines.push((forgeHeader ? '[伪造 X-Tenant-Id: beta] ' : '') + 'HTTP ' + res.status);
+        lines.push('期望：' + (forgeHeader
+          ? '仍只返回 token 所属租户的数据（伪造头被忽略）'
+          : '只返回 token 所属租户的数据'));
+        lines.push('');
+        try { lines.push(JSON.stringify(JSON.parse(text), null, 2)); }
+        catch (e) { lines.push(text); }
+        out.textContent = lines.join('\n');
+      } catch (e) {
+        out.textContent = '请求异常：' + e.message;
+      }
+    }
+
+    // ---------- 入口 ----------
+    (function init() {
+      document.getElementById('btn-auth').addEventListener('click', startAuthorization);
+      document.getElementById('btn-api').addEventListener('click', function () { callProjects(false); });
+      document.getElementById('btn-api-forge').addEventListener('click', function () { callProjects(true); });
+
+      var params = new URLSearchParams(location.search);
+      var err = params.get('error');
+      var code = params.get('code');
+
+      if (err) {
+        document.getElementById('token-status').innerHTML =
+          '<span class="tag bad">授权失败</span>' + esc(err) + ' — ' + esc(params.get('error_description') || '');
+        return;
+      }
+      if (code) {
+        history.replaceState({}, '', location.pathname); // 清掉 URL 里的 code，避免刷新重复使用
+        exchangeCode(code, params.get('state'));
+        return;
+      }
+
+      // 无 code：如果有历史令牌，直接回显（刷新页面不丢）
+      var cached = sessionStorage.getItem(K_TOKEN);
+      if (cached) {
+        try {
+          var data = JSON.parse(cached);
+          document.getElementById('token-status').innerHTML =
+            '<span class="tag warn">已缓存</span>显示上一次获取的令牌。重新授权请点「开始授权」。';
+          renderTokens(data);
+        } catch (e) { /* ignore */ }
+      }
+    })();
+  </script>
+</body>
+
+</html>

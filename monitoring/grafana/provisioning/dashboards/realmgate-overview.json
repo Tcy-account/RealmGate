@@ -1,0 +1,54 @@
+{
+  "dashboard": {
+    "id": null,
+    "uid": "realmgate-overview",
+    "title": "RealmGate 安全概览",
+    "tags": ["realmgate", "security"],
+    "timezone": "browser",
+    "schemaVersion": 39,
+    "panels": [
+      {
+        "id": 1,
+        "title": "Token 吊销总数",
+        "type": "stat",
+        "datasource": "Prometheus",
+        "gridPos": { "h": 6, "w": 6, "x": 0, "y": 0 },
+        "targets": [
+          { "expr": "sum(realmgate_token_revoked_total)", "refId": "A" }
+        ]
+      },
+      {
+        "id": 2,
+        "title": "登录失败总数",
+        "type": "stat",
+        "datasource": "Prometheus",
+        "gridPos": { "h": 6, "w": 6, "x": 6, "y": 0 },
+        "targets": [
+          { "expr": "sum(realmgate_login_failure_total)", "refId": "A" }
+        ]
+      },
+      {
+        "id": 3,
+        "title": "密钥轮换次数",
+        "type": "stat",
+        "datasource": "Prometheus",
+        "gridPos": { "h": 6, "w": 6, "x": 12, "y": 0 },
+        "targets": [
+          { "expr": "sum(realmgate_jwk_rotations_total)", "refId": "A" }
+        ]
+      },
+      {
+        "id": 4,
+        "title": "Token 拒绝数（按原因，近 5 分钟速率）",
+        "type": "timeseries",
+        "datasource": "Prometheus",
+        "gridPos": { "h": 8, "w": 18, "x": 0, "y": 6 },
+        "targets": [
+          { "expr": "sum by (reason) (rate(realmgate_token_rejected_total[5m]))", "refId": "A" }
+        ]
+      }
+    ]
+  },
+  "folder": "",
+  "overwrite": true
+}

@@ -1,0 +1,53 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: realmgate-gateway
+  # 网关级限流 / JWT 粗校验用到的 Redis（复用 docker-compose 的 redis 服务）
+  data:
+    redis:
+      host: localhost
+      port: 6379
+  cloud:
+    gateway:
+      # 统一跨域：前端 dev(5173) 与未来生产域都走这里
+      globalcors:
+        cors-configurations:
+          '[/**]':
+            allowedOrigins: "http://127.0.0.1:5173"
+            allowedMethods: "*"
+            allowedHeaders: "*"
+            allowCredentials: true
+      # 路由：所有流量先到网关 8080，再透传到后端 9000
+      routes:
+        # 业务 API：经 JWT 粗校验（GlobalFilter）+ 网关限流
+        - id: api-route
+          uri: http://localhost:9000
+          predicates:
+            - Path=/api/**
+          filters:
+            - name: RequestRateLimiter
+              args:
+                redis-rate-limiter.replenishRate: 1       # 每秒补充 1 个令牌（演示值，便于验证触发 429）
+                redis-rate-limiter.burstCapacity: 5       # 突发上限 5（演示值；生产可调大）
+                redis-rate-limiter.requestedTokens: 1     # 每请求消耗 1 令牌
+                key-resolver: "#{@tenantKeyResolver}"     # 限流键：JWT tenant_id 或 IP
+        # 授权端点（OIDC / PKCE 流程）：透传，不校验、不限流，交由后端处理
+        - id: oauth-route
+          uri: http://localhost:9000
+          predicates:
+            - Path=/oauth2/**, /login, /logout, /.well-known/**
+      # 默认不移除前缀：/api/** 透传到后端仍带 /api 前缀（后端控制器即 /api/**）
+
+# 后端（realmgate-server）地址：JWT 粗校验拉 JWKS 用
+realmgate:
+  backend:
+    base-uri: http://localhost:9000
+    jwks-uri: http://localhost:9000/oauth2/jwks
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health, gateway, metrics

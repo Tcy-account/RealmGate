@@ -1,0 +1,19 @@
+# RealmGate 监控预留：Prometheus 抓取配置
+# 主 Compose（docker-compose.yml）已起 PG+Redis；本文件随 docker-compose.monitoring.yml 单独起 Prometheus+Grafana。
+# 启动：docker compose -f docker-compose.monitoring.yml up -d
+# 访问：Prometheus http://localhost:9090 ｜ Grafana http://localhost:3000（admin/admin）
+#
+# 注意：Prometheus 跑在容器内，抓取宿主机（你 IDE 直接启动的 realmgate-server :9000）需用 host.docker.internal。
+# Windows / macOS Docker Desktop 原生支持该 DNS；Linux 需在 prometheus 服务加 extra_hosts: ["host.docker.internal:host-gateway"]。
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: 'realmgate-server'
+    metrics_path: '/actuator/prometheus'
+    static_configs:
+      - targets: ['host.docker.internal:9000']
+        labels:
+          service: 'realmgate-server'

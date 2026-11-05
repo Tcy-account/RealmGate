@@ -1,0 +1,53 @@
+spring:
+  application:
+    name: realmgate-server
+  # 默认激活 dev；运行时可用 SPRING_PROFILES_ACTIVE 或 --spring.profiles.active 覆盖
+  profiles:
+    active: ${SPRING_PROFILES_ACTIVE:dev}
+
+  # JPA：schema 完全交给 Flyway 管理，应用启动只做校验，绝不自动建表
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+    properties:
+      hibernate:
+        format_sql: true
+        jdbc:
+          time_zone: UTC
+
+  # Flyway 数据库迁移
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    baseline-on-migrate: true
+    baseline-version: 0
+
+# actuator：暴露健康检查，供 Docker/k8s 探活与本地验证
+# ⚠️ management 必须是顶级键；缩进到 spring: 下面会变成 spring.management（无效属性），配置静默失效
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,metrics
+  endpoint:
+    health:
+      show-details: when_authorized
+  # 站 M7：Prometheus 拉取格式端点（/actuator/prometheus）。
+  # 自定义业务指标（realmgate.*）由 SecurityMetrics 注册；JVM/HTTP(Redis 连接/Flyway) 等自动指标由 Micrometer 提供。
+  prometheus:
+    metrics:
+      export:
+        enabled: true
+
+server:
+  # 计划文档中 OAuth issuer 示例为 localhost:9000，后端端口对齐为 9000
+  port: 9000
+  # 注意：不使用 context-path。业务接口在 Controller 上以 /api 前缀书写，
+  # OAuth2/OIDC 标准端点（/oauth2/authorize、/.well-known/openid-configuration 等）留在根路径。
+
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html
+  api-docs:
+    path: /v3/api-docs
